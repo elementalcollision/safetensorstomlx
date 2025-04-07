@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import shutil
+import datetime
 from pathlib import Path
 
 # Configure logging
@@ -39,12 +40,31 @@ def setup_mlx_path(mlx_dir=None):
         if version_str != 'unknown':
             try:
                 version_parts = version_str.split('.')
-                if int(version_parts[0]) < 1 and int(version_parts[1]) < 24:
+                major, minor, patch = 0, 0, 0
+                
+                if len(version_parts) >= 1:
+                    major = int(version_parts[0])
+                if len(version_parts) >= 2:
+                    minor = int(version_parts[1])
+                if len(version_parts) >= 3:
+                    # Handle patch versions that might have additional text (e.g., '1.dev0')
+                    patch_str = version_parts[2].split('.')[0].split('-')[0]
+                    try:
+                        patch = int(patch_str)
+                    except ValueError:
+                        pass
+                
+                # Check if version is at least 0.9.0 (recommended for Python 3.13)
+                if major == 0 and minor < 9:
                     logger.warning(
                         f"MLX version {version_str} may be outdated. "
-                        f"Recommended version is at least 0.24.0")
+                        f"Recommended version is at least 0.9.0 for Python 3.13")
             except (ValueError, IndexError):
                 logger.warning(f"Could not parse MLX version: {version_str}")
+        
+        # Check for save_safetensors function
+        has_save_safetensors = hasattr(mlx.core, 'save_safetensors')
+        logger.info(f"MLX has save_safetensors function: {has_save_safetensors}")
         
         return True
     except ImportError:
@@ -279,8 +299,16 @@ def optimize_mlx_model(args, intermediate_file):
             with h5py.File(intermediate_file, 'r') as f:
                 if 'format' in f.attrs and f.attrs['format'] == 'mlx_custom':
                     custom_format = True
-        except Exception:
+                    # Log additional metadata if available
+                    if 'python_version' in f.attrs:
+                        logger.info(f"Model was created with Python {f.attrs['python_version']}")
+                    if 'numpy_version' in f.attrs:
+                        logger.info(f"Model was created with NumPy {f.attrs['numpy_version']}")
+                    if 'creation_date' in f.attrs:
+                        logger.info(f"Model creation date: {f.attrs['creation_date']}")
+        except Exception as e:
             # If we can't open the file with h5py, it's not our custom format
+            logger.debug(f"Error checking custom format: {e}")
             pass
     
     if custom_format:
@@ -288,6 +316,7 @@ def optimize_mlx_model(args, intermediate_file):
         
         # Copy the intermediate file to the output location
         import shutil
+        import json
         
         # Create parent directories if they don't exist
         outfile.parent.mkdir(parents=True, exist_ok=True)
@@ -301,12 +330,35 @@ def optimize_mlx_model(args, intermediate_file):
             shutil.rmtree(tensor_out_dir)
         shutil.copytree(tensor_dir, tensor_out_dir)
         
-        # Copy the metadata and config files
+        # Copy and update the metadata and config files
         for suffix in ['.metadata.json', '.config.json', '.tokenizer.json']:
             src_file = intermediate_file.with_suffix(suffix)
             if src_file.exists():
                 dst_file = outfile.with_suffix(suffix)
-                shutil.copy2(src_file, dst_file)
+                
+                # For metadata, add optimization info
+                if suffix == '.metadata.json':
+                    try:
+                        with open(src_file, 'r', encoding='utf-8') as f:
+                            metadata = json.load(f)
+                        
+                        # Add optimization info
+                        metadata['optimization'] = {
+                            'type': args.type,
+                            'date': str(datetime.datetime.now()),
+                            'python_version': sys.version,
+                            'mlx_version': getattr(mlx, '__version__', 'unknown')
+                        }
+                        
+                        with open(dst_file, 'w', encoding='utf-8') as f:
+                            json.dump(metadata, f, indent=2, ensure_ascii=False)
+                    except Exception as e:
+                        logger.warning(f"Error updating metadata: {e}")
+                        # Fallback to simple copy
+                        shutil.copy2(src_file, dst_file)
+                else:
+                    # Simple copy for other files
+                    shutil.copy2(src_file, dst_file)
         
         # Clean up the intermediate file if not keeping it
         if not args.keep_intermediate:

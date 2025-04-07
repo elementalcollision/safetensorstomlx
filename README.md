@@ -29,11 +29,12 @@ A toolkit for working with Hugging Face models and MLX format for use with Apple
 
 ## Requirements
 
-- Python 3.8 or higher
-- PyTorch
-- MLX framework (supports both newer versions with save_safetensors and older versions)
+- Python 3.13.2 (also compatible with Python 3.8 or higher)
+- PyTorch 2.2.0+
+- MLX framework 0.9.0+ (also supports older versions with custom implementation)
 - Apple Silicon Mac (M1/M2/M3 or newer)
-- h5py (for custom MLX format with older MLX versions)
+- NumPy 1.26.0+
+- h5py 3.10.0+ (for custom MLX format)
 
 ## Installation
 

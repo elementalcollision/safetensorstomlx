@@ -14,7 +14,8 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
+from typing_extensions import TypedDict
 
 import torch
 import numpy as np
@@ -44,10 +45,29 @@ def setup_mlx_path(mlx_dir=None):
         if version_str != 'unknown':
             try:
                 version_parts = version_str.split('.')
-                if int(version_parts[0]) < 1 and int(version_parts[1]) < 24:
-                    logger.warning(f"MLX version {version_str} may be outdated. Recommended version is at least 0.24.0")
+                major, minor, patch = 0, 0, 0
+                
+                if len(version_parts) >= 1:
+                    major = int(version_parts[0])
+                if len(version_parts) >= 2:
+                    minor = int(version_parts[1])
+                if len(version_parts) >= 3:
+                    # Handle patch versions that might have additional text (e.g., '1.dev0')
+                    patch_str = version_parts[2].split('.')[0].split('-')[0]
+                    try:
+                        patch = int(patch_str)
+                    except ValueError:
+                        pass
+                
+                # Check if version is at least 0.9.0 (recommended for Python 3.13)
+                if major == 0 and minor < 9:
+                    logger.warning(f"MLX version {version_str} may be outdated. Recommended version is at least 0.9.0 for Python 3.13")
             except (ValueError, IndexError):
                 logger.warning(f"Could not parse MLX version: {version_str}")
+        
+        # Check for save_safetensors function
+        has_save_safetensors = hasattr(mx, 'save_safetensors')
+        logger.info(f"MLX has save_safetensors function: {has_save_safetensors}")
         
         return True
     except ImportError:
@@ -303,15 +323,37 @@ class MLXModelConverter:
         
         # If we have a tokenizer, save its configuration
         if self.tokenizer:
-            tokenizer_config = self.tokenizer.to_dict()
+            if hasattr(self.tokenizer, 'to_dict'):
+                tokenizer_config = self.tokenizer.to_dict()
+            elif hasattr(self.tokenizer, 'to_json'):
+                # For newer transformers versions that use to_json instead of to_dict
+                import json
+                tokenizer_config = json.loads(self.tokenizer.to_json())
+            else:
+                # Create a basic dictionary with essential tokenizer attributes
+                tokenizer_config = {
+                    "name_or_path": getattr(self.tokenizer, "name_or_path", None),
+                    "model_max_length": getattr(self.tokenizer, "model_max_length", 32768),
+                    "vocab_size": getattr(self.tokenizer, "vocab_size", None),
+                }
             model_dict["tokenizer"] = tokenizer_config
         
         # Try to save using save_safetensors if available, otherwise use a custom implementation
         try:
             # Check if save_safetensors function exists in mlx.core
             if hasattr(mx, 'save_safetensors'):
-                mx.save_safetensors(str(self.output_path), model_dict["weights"])
-                logger.info("Used mlx.core.save_safetensors to save model")
+                # In newer MLX versions (0.9.0+), save_safetensors might have different parameters
+                try:
+                    # Try the newer signature that might include additional parameters
+                    mx.save_safetensors(str(self.output_path), model_dict["weights"])
+                    logger.info("Used mlx.core.save_safetensors to save model")
+                except TypeError as e:
+                    if "unexpected keyword argument" in str(e):
+                        # Fall back to a more basic call if the signature has changed
+                        mx.save_safetensors(str(self.output_path), model_dict["weights"])
+                        logger.info("Used mlx.core.save_safetensors with basic parameters")
+                    else:
+                        raise
             else:
                 # Fallback to custom implementation for older MLX versions
                 logger.info("save_safetensors not found in mlx.core, using custom implementation")
@@ -324,18 +366,18 @@ class MLXModelConverter:
         # Also save metadata and config as JSON files
         import json
         metadata_path = self.output_path.with_suffix('.metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(model_dict["metadata"], f, indent=2)
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(model_dict["metadata"], f, indent=2, ensure_ascii=False)
         
         config_path = self.output_path.with_suffix('.config.json')
-        with open(config_path, 'w') as f:
-            json.dump(model_dict["config"], f, indent=2)
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(model_dict["config"], f, indent=2, ensure_ascii=False)
         
         # If we have a tokenizer, save its configuration
         if "tokenizer" in model_dict:
             tokenizer_path = self.output_path.with_suffix('.tokenizer.json')
-            with open(tokenizer_path, 'w') as f:
-                json.dump(model_dict["tokenizer"], f, indent=2)
+            with open(tokenizer_path, 'w', encoding='utf-8') as f:
+                json.dump(model_dict["tokenizer"], f, indent=2, ensure_ascii=False)
         
         logger.info(f"Successfully saved MLX model to {self.output_path}")
         logger.info(f"Model size: {self.output_path.stat().st_size / (1024 * 1024):.2f} MB")
@@ -346,6 +388,7 @@ class MLXModelConverter:
         import json
         import os
         import h5py
+        import datetime
         from pathlib import Path
         
         logger.info(f"Using custom MLX saving implementation for {path}")
@@ -360,8 +403,8 @@ class MLXModelConverter:
         
         # Save each tensor individually as a numpy file
         for name, tensor in tensors.items():
-            # Create a safe filename
-            safe_name = name.replace('/', '_').replace('.', '_')
+            # Create a safe filename - ensure it's valid for all filesystems
+            safe_name = ''.join(c if c.isalnum() or c in '_-' else '_' for c in name)
             tensor_path = tensor_dir / f"{safe_name}.npy"
             
             try:
@@ -372,27 +415,43 @@ class MLXModelConverter:
                 # Store metadata
                 tensor_info[name] = {
                     "path": str(tensor_path.relative_to(tensor_dir)),
-                    "shape": list(shape),
+                    "shape": list(map(int, shape)),  # Ensure all shape elements are native Python ints
                     "dtype": dtype,
                     "original_name": name
                 }
                 
-                # Convert to numpy and save
-                if hasattr(tensor, 'numpy'):
-                    np.save(tensor_path, tensor.numpy())
-                elif hasattr(tensor, 'astype'):
-                    np.save(tensor_path, tensor)
-                else:
-                    # Try to convert to a numpy array first
-                    np.save(tensor_path, np.array(tensor))
+                # Convert to numpy and save with explicit allow_pickle=False for security
+                try:
+                    if hasattr(tensor, 'numpy'):
+                        # For PyTorch or TensorFlow tensors
+                        np_array = tensor.numpy()
+                        np.save(tensor_path, np_array, allow_pickle=False)
+                    elif hasattr(tensor, 'astype'):
+                        # For NumPy arrays
+                        np.save(tensor_path, tensor, allow_pickle=False)
+                    else:
+                        # Try to convert to a numpy array first
+                        np_array = np.array(tensor, copy=False)
+                        np.save(tensor_path, np_array, allow_pickle=False)
+                except TypeError as e:
+                    if "allow_pickle" in str(e):
+                        # Fallback for older NumPy versions that don't support allow_pickle
+                        if hasattr(tensor, 'numpy'):
+                            np.save(tensor_path, tensor.numpy())
+                        elif hasattr(tensor, 'astype'):
+                            np.save(tensor_path, tensor)
+                        else:
+                            np.save(tensor_path, np.array(tensor, copy=False))
+                    else:
+                        raise
                     
                 logger.debug(f"Saved tensor {name} to {tensor_path}")
             except Exception as e:
                 logger.warning(f"Could not save tensor {name}: {e}")
         
-        # Save tensor metadata
-        with open(tensor_dir / "metadata.json", 'w') as f:
-            json.dump(tensor_info, f, indent=2)
+        # Save tensor metadata with proper encoding for Python 3.13
+        with open(tensor_dir / "metadata.json", 'w', encoding='utf-8') as f:
+            json.dump(tensor_info, f, indent=2, ensure_ascii=False)
         
         # Create a simple HDF5 file as the main model file
         with h5py.File(path, 'w') as f:
@@ -400,11 +459,16 @@ class MLXModelConverter:
             f.attrs['format'] = 'mlx_custom'
             f.attrs['tensor_dir'] = str(tensor_dir)
             f.attrs['num_tensors'] = len(tensor_info)
+            f.attrs['python_version'] = sys.version
+            f.attrs['numpy_version'] = np.__version__
+            f.attrs['creation_date'] = str(datetime.datetime.now())
             
             # Create a group for tensor metadata
             meta_group = f.create_group('tensor_metadata')
             for name, info in tensor_info.items():
-                tensor_group = meta_group.create_group(name)
+                # Create a safe group name for HDF5
+                safe_group_name = ''.join(c if c.isalnum() or c in '_-' else '_' for c in name)
+                tensor_group = meta_group.create_group(safe_group_name)
                 for k, v in info.items():
                     if isinstance(v, list):
                         tensor_group.attrs[k] = json.dumps(v)
