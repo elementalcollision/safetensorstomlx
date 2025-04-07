@@ -118,3 +118,4 @@ model_analysis.json
 .vscode/
 *.swp
 *.swo
+*.cfg

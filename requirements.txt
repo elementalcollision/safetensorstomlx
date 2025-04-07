@@ -7,3 +7,4 @@ mlx>=0.0.4
 huggingface_hub>=0.16.0
 sentencepiece>=0.1.99
 tokenizers>=0.13.3
+h5py>=3.7.0

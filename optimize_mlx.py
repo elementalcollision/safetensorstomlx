@@ -27,14 +27,24 @@ logger.addHandler(handler)
 def setup_mlx_path(mlx_dir=None):
     """Set up the MLX path and verify installation"""
     try:
-        logger.info(f"Found MLX version: {mlx.__version__}")
-        # Check if version is at least 0.24.0
-        version_parts = mlx.__version__.split('.')
-        if int(version_parts[0]) < 1 and int(version_parts[1]) < 24:
-            logger.warning(
-                f"MLX version {mlx.__version__} may be outdated. "
-                "Recommended version is at least 0.24.0"
-            )
+        import mlx  # Import mlx here to ensure it's available
+        
+        # Check if MLX has __version__ attribute
+        version_str = getattr(mlx, '__version__', 'unknown')
+        logger.info(f"Found MLX version: {version_str}")
+        
+        # Only check version if it's available
+        if version_str != 'unknown':
+            try:
+                version_parts = version_str.split('.')
+                if int(version_parts[0]) < 1 and int(version_parts[1]) < 24:
+                    logger.warning(
+                        f"MLX version {version_str} may be outdated. "
+                        "Recommended version is at least 0.24.0"
+                    )
+            except (ValueError, IndexError):
+                logger.warning(f"Could not parse MLX version: {version_str}")
+        
         return True
     except ImportError:
         logger.error(

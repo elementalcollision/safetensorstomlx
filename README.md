@@ -7,8 +7,10 @@ A toolkit for working with Hugging Face models and MLX format for use with Apple
 ### SafeTensors to MLX Conversion
 - Converts SafeTensors model files to MLX format
 - Supports Llama-4 models with Mixture of Experts (MoE) architecture
+- Supports Qwen2.5 models including Qwen2.5-Omni-7B
 - Handles multimodal models by skipping vision components
-- Supports custom tokenizer formats used in Llama-4
+- Supports custom tokenizer formats used in Llama-4 and Qwen2.5 models
+- Custom MLX format implementation for older MLX versions
 - Automatically detects the MLX directory or allows custom path specification
 
 ### MLX Optimization
@@ -29,8 +31,9 @@ A toolkit for working with Hugging Face models and MLX format for use with Apple
 
 - Python 3.8 or higher
 - PyTorch
-- MLX framework (version 0.24.0 or newer)
+- MLX framework (supports both newer versions with save_safetensors and older versions)
 - Apple Silicon Mac (M1/M2/M3 or newer)
+- h5py (for custom MLX format with older MLX versions)
 
 ## Installation
 
@@ -102,6 +105,21 @@ python safetensors_to_mlx.py --model /path/to/Llama-4-Scout-17B-16E-Instruct --v
 
 ```bash
 python optimize_mlx.py --model /path/to/model.mlx --type fp16
+```
+
+### Testing and Verification
+
+The repository includes several testing and verification scripts in the `tests` directory:
+
+```bash
+# Test model loading and tensor verification
+python tests/verify_model.py --model /path/to/model.mlx
+
+# Test basic model inference
+python tests/test_inference.py --model /path/to/model.mlx
+
+# Test Qwen2.5 model inference
+python tests/qwen_mlx_inference.py --model /path/to/model.mlx --test-only
 ```
 
 ### MLX Optimization with Custom Output Path

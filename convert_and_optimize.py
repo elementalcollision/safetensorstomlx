@@ -30,13 +30,22 @@ def setup_mlx_path(mlx_dir=None):
     try:
         import mlx
         import mlx.core
-        logger.info(f"Found MLX version: {mlx.__version__}")
-        # Check if version is at least 0.24.0
-        version_parts = mlx.__version__.split('.')
-        if int(version_parts[0]) < 1 and int(version_parts[1]) < 24:
-            logger.warning(
-                f"MLX version {mlx.__version__} may be outdated. "
-                f"Recommended version is at least 0.24.0")
+        
+        # Check if MLX has __version__ attribute
+        version_str = getattr(mlx, '__version__', 'unknown')
+        logger.info(f"Found MLX version: {version_str}")
+        
+        # Only check version if it's available
+        if version_str != 'unknown':
+            try:
+                version_parts = version_str.split('.')
+                if int(version_parts[0]) < 1 and int(version_parts[1]) < 24:
+                    logger.warning(
+                        f"MLX version {version_str} may be outdated. "
+                        f"Recommended version is at least 0.24.0")
+            except (ValueError, IndexError):
+                logger.warning(f"Could not parse MLX version: {version_str}")
+        
         return True
     except ImportError:
         logger.error(
@@ -260,7 +269,63 @@ def optimize_mlx_model(args, intermediate_file):
             f"{args.safetensors_dir.name}_{args.type}.mlx"
 
     logger.info(f"Output optimized MLX file: {outfile}")
-
+    
+    # Check if the intermediate file is in our custom format
+    custom_format = False
+    tensor_dir = intermediate_file.with_suffix('.tensors')
+    if tensor_dir.exists() and tensor_dir.is_dir():
+        try:
+            import h5py
+            with h5py.File(intermediate_file, 'r') as f:
+                if 'format' in f.attrs and f.attrs['format'] == 'mlx_custom':
+                    custom_format = True
+        except Exception:
+            # If we can't open the file with h5py, it's not our custom format
+            pass
+    
+    if custom_format:
+        logger.info(f"Detected custom MLX format, skipping optimization")
+        
+        # Copy the intermediate file to the output location
+        import shutil
+        
+        # Create parent directories if they don't exist
+        outfile.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Copy the main file
+        shutil.copy2(intermediate_file, outfile)
+        
+        # Copy the tensor directory
+        tensor_out_dir = outfile.with_suffix('.tensors')
+        if tensor_out_dir.exists():
+            shutil.rmtree(tensor_out_dir)
+        shutil.copytree(tensor_dir, tensor_out_dir)
+        
+        # Copy the metadata and config files
+        for suffix in ['.metadata.json', '.config.json', '.tokenizer.json']:
+            src_file = intermediate_file.with_suffix(suffix)
+            if src_file.exists():
+                dst_file = outfile.with_suffix(suffix)
+                shutil.copy2(src_file, dst_file)
+        
+        # Clean up the intermediate file if not keeping it
+        if not args.keep_intermediate:
+            logger.info(f"Removing intermediate MLX file: {intermediate_file}")
+            intermediate_file.unlink()
+            # Also remove the tensor directory and metadata files
+            if tensor_dir.exists():
+                shutil.rmtree(tensor_dir)
+            for suffix in ['.metadata.json', '.config.json', '.tokenizer.json']:
+                src_file = intermediate_file.with_suffix(suffix)
+                if src_file.exists():
+                    src_file.unlink()
+        
+        logger.info(f"Successfully copied MLX model to: {outfile}")
+        logger.info(f"Final model size: {outfile.stat().st_size / (1024 * 1024):.2f} MB")
+        
+        return 0
+    
+    # Standard optimization for regular MLX format
     # Import the optimize_mlx module
     try:
         import importlib.util
